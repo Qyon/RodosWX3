@@ -1,14 +1,13 @@
 ///////////////////////////////////////////////////////////////////////////////////////////////////
 // RodosWX3.ino
 // 
-// Integracja: Bresser + ESP8266/ESP32 + BME280 + CC1101/SX1276/SX1262 -> APRS
+// Integracja: Bresser + ESP8266/ESP32 + BME280/BMP280 + CC1101/SX1276/SX1262 -> APRS
 // + Zapis PEŁNEJ konfiguracji w LittleFS przez Panel WWW
 // + Tryb Access Point (Fallback) przy braku WiFi
 // + Watchdog (Restart po 5 min bez ramek radiowych)
-// + Wersja Multiplatformowa
-// + Dynamiczne definiowanie pinów I2C i OLED przez WWW
-// + Czas wyświetlania (interwał) stron na OLED konfigurowany przez WWW
-// + Czytelny interfejs OLED z dużymi czcionkami i podziałem na strony
+// + Dynamiczne definiowanie pinów (OLED na szynie 0, Baro na szynie 1)
+// + Czytelny interfejs OLED z dużymi czcionkami
+// + Algorytm opadów NTP - niezależny od interwału ramek radiowych
 ///////////////////////////////////////////////////////////////////////////////////////////////////
 
 #include <Arduino.h>
@@ -29,6 +28,7 @@
 #include <Wire.h>
 #include <Adafruit_Sensor.h>
 #include <Adafruit_BME280.h> 
+#include <Adafruit_BMP280.h> 
 #include <LittleFS.h> 
 #include <ESPAsyncWebServer.h>
 
@@ -41,7 +41,6 @@
 
 #define SCREEN_WIDTH 128
 #define SCREEN_HEIGHT 64
-// Przekazujemy -1 jako RST, ponieważ resetem sterujemy ręcznie podczas setupu
 Adafruit_SSD1306 display(SCREEN_WIDTH, SCREEN_HEIGHT, &Wire, -1);
 bool display_available = false;
 unsigned long last_display_time = 0;
@@ -62,18 +61,18 @@ struct AppConfig {
     String server_host = "rotate.aprs2.net";
     uint16_t server_port = 14580;
     
-    // Konfiguracja pinów sprzętowych (-1 oznacza auto/brak)
-    int i2c_sda = -1;
-    int i2c_scl = -1;
+    int oled_sda = -1;
+    int oled_scl = -1;
     int oled_rst = -1;
     int oled_pwr = -1;
-
-    // Czas zmiany ekranu (w sekundach)
     int oled_interval = 4;
+    
+    int bme_sda = -1;
+    int bme_scl = -1;
 } config;
 
 void saveConfig() {
-    File f = LittleFS.open("/config_v4.txt", "w");
+    File f = LittleFS.open("/config_v5.txt", "w");
     if (f) {
         f.println(String(config.sensor_id, HEX));
         f.println(config.wifi_ssid);
@@ -88,11 +87,13 @@ void saveConfig() {
         f.println(config.server_host);
         f.println(String(config.server_port));
         
-        f.println(String(config.i2c_sda));
-        f.println(String(config.i2c_scl));
+        f.println(String(config.oled_sda));
+        f.println(String(config.oled_scl));
         f.println(String(config.oled_rst));
         f.println(String(config.oled_pwr));
         f.println(String(config.oled_interval));
+        f.println(String(config.bme_sda));
+        f.println(String(config.bme_scl));
         
         f.close();
         Serial.println(F("[SYSTEM] Konfiguracja zapisana."));
@@ -100,8 +101,8 @@ void saveConfig() {
 }
 
 void loadConfig() {
-    if (LittleFS.exists("/config_v4.txt")) {
-        File f = LittleFS.open("/config_v4.txt", "r");
+    if (LittleFS.exists("/config_v5.txt")) {
+        File f = LittleFS.open("/config_v5.txt", "r");
         if (f) {
             config.sensor_id = strtoul(f.readStringUntil('\n').c_str(), NULL, 16);
             config.wifi_ssid = f.readStringUntil('\n'); config.wifi_ssid.trim();
@@ -116,17 +117,19 @@ void loadConfig() {
             config.server_host = f.readStringUntil('\n'); config.server_host.trim();
             config.server_port = f.readStringUntil('\n').toInt();
             
-            String s_sda = f.readStringUntil('\n'); if(s_sda.length() > 0) config.i2c_sda = s_sda.toInt();
-            String s_scl = f.readStringUntil('\n'); if(s_scl.length() > 0) config.i2c_scl = s_scl.toInt();
-            String s_rst = f.readStringUntil('\n'); if(s_rst.length() > 0) config.oled_rst = s_rst.toInt();
-            String s_pwr = f.readStringUntil('\n'); if(s_pwr.length() > 0) config.oled_pwr = s_pwr.toInt();
-            String s_int = f.readStringUntil('\n'); if(s_int.length() > 0) config.oled_interval = s_int.toInt();
+            String s_osda = f.readStringUntil('\n'); if(s_osda.length() > 0) config.oled_sda = s_osda.toInt();
+            String s_oscl = f.readStringUntil('\n'); if(s_oscl.length() > 0) config.oled_scl = s_oscl.toInt();
+            String s_orst = f.readStringUntil('\n'); if(s_orst.length() > 0) config.oled_rst = s_orst.toInt();
+            String s_opwr = f.readStringUntil('\n'); if(s_opwr.length() > 0) config.oled_pwr = s_opwr.toInt();
+            String s_oint = f.readStringUntil('\n'); if(s_oint.length() > 0) config.oled_interval = s_oint.toInt();
+            String s_bsda = f.readStringUntil('\n'); if(s_bsda.length() > 0) config.bme_sda = s_bsda.toInt();
+            String s_bscl = f.readStringUntil('\n'); if(s_bscl.length() > 0) config.bme_scl = s_bscl.toInt();
             
             f.close();
             Serial.println(F("[SYSTEM] Wczytano konfiguracje z pamieci."));
         }
     } else {
-        Serial.println(F("[SYSTEM] Brak pliku konfiguracyjnego v4. Ladowanie domyslnych."));
+        Serial.println(F("[SYSTEM] Brak pliku konfiguracyjnego v5. Ladowanie domyslnych."));
         saveConfig();
     }
 }
@@ -137,8 +140,11 @@ void loadConfig() {
 #define TFESC  0xDD
 
 WeatherSensor ws;
+
+// --- ZMIENNE CZUJNIKA CISNIENIA ---
 Adafruit_BME280 bme;
-bool bme_available = false;
+Adafruit_BMP280 *bmp = nullptr;
+int baro_sensor_type = 0; // 0 = brak, 1 = BME280, 2 = BMP280
 
 AsyncWebServer server(80);
 
@@ -161,10 +167,25 @@ struct WeatherData {
   bool valid_data = false;
 } current_wx;
 
-struct RainHistory { float total_mm; bool valid; };
-RainHistory rain_buffer[96]; 
-uint8_t rain_idx = 0;
+// =========================================================================
+// --- SYSTEM REJESTRACJI OPADÓW OPARTY NA ZEGARZE NTP ---------------------
+// =========================================================================
+#define RAIN_SAMPLES 144
+struct RainRecord {
+    uint32_t timestamp;
+    float cum_rain;
+};
+RainRecord rain_history[RAIN_SAMPLES];
+int rain_hist_idx = 0;
+uint32_t last_rain_save_time = 0;
+
+int calc_r1h = 0;
+int calc_p24h = 0;
+int calc_lum = 0;
+
 unsigned long last_report_time = 0;
+unsigned long last_frame_time = 0; 
+static const unsigned long NO_DATA_TIMEOUT_MS = 5UL * 60UL * 1000UL; 
 
 #define MAX_SEEN_IDS 5
 uint32_t seen_ids[MAX_SEEN_IDS] = {0};
@@ -183,14 +204,39 @@ void addSeenId(uint32_t id) {
     seen_ids[MAX_SEEN_IDS - 1] = id; 
 }
 
-int calc_r1h = 0;
-int calc_p24h = 0;
-int calc_lum = 0;
+float get_rain_delta(uint32_t target_sec, float current_rain) {
+    uint32_t min_diff = 0xFFFFFFFF;
+    float base_rain = current_rain;
+    bool found_close = false;
+    
+    for (int i=0; i<RAIN_SAMPLES; i++) {
+        uint32_t t = rain_history[i].timestamp;
+        if (t > 0) {
+            uint32_t diff = (t > target_sec) ? (t - target_sec) : (target_sec - t);
+            if (diff < min_diff && diff <= 3600) { 
+                min_diff = diff;
+                base_rain = rain_history[i].cum_rain;
+                found_close = true;
+            }
+        }
+    }
+    
+    if (!found_close) {
+        uint32_t oldest_t = 0xFFFFFFFF;
+        for (int i=0; i<RAIN_SAMPLES; i++) {
+            uint32_t t = rain_history[i].timestamp;
+            if (t > 0 && t < oldest_t) {
+                oldest_t = t;
+                base_rain = rain_history[i].cum_rain;
+            }
+        }
+    }
+    
+    float diff = current_rain - base_rain;
+    if (diff < 0) diff = current_rain; 
+    return diff;
+}
 
-unsigned long last_frame_time = 0; 
-static const unsigned long NO_DATA_TIMEOUT_MS = 5UL * 60UL * 1000UL; 
-
-// --- FUNKCJA AKTUALIZUJĄCA EKRAN OLED ---
 void updateDisplay() {
     if (!display_available) return;
     
@@ -281,7 +327,6 @@ void updateDisplay() {
     display.display();
 }
 
-// --- STRONA HTML ---
 const char index_html[] PROGMEM = R"rawliteral(
 <!DOCTYPE HTML><html>
 <head>
@@ -340,7 +385,7 @@ const char index_html[] PROGMEM = R"rawliteral(
           <div class="cfg-group"><label>Znak (Callsign):</label><input type="text" id="cfg_call"></div>
           <div class="cfg-group"><label>SSID (np. 13):</label><input type="number" id="cfg_call_ssid"></div>
           <div class="cfg-group"><label>Passcode APRS:</label><input type="text" id="cfg_passcode"></div>
-          <div class="cfg-group"><label>Interwał (minuty):</label><input type="number" id="cfg_interval"></div>
+          <div class="cfg-group"><label>Interwał APRS (minuty):</label><input type="number" id="cfg_interval"></div>
           <div class="cfg-group"><label>Lat (Szerokość):</label><input type="number" step="0.0001" id="cfg_lat"></div>
           <div class="cfg-group"><label>Lon (Długość):</label><input type="number" step="0.0001" id="cfg_lon"></div>
           <div class="cfg-group">
@@ -355,16 +400,17 @@ const char index_html[] PROGMEM = R"rawliteral(
       </div>
     </div>
 
-    <!-- KONFIGURACJA SPRZĘTU -->
     <div class="card" style="grid-column: 1 / -1;">
-      <h3>Konfiguracja Sprzętowa (Piny I2C / OLED)</h3>
+      <h3>Konfiguracja Sprzętowa (Piny I2C)</h3>
       <p style="font-size: 0.9rem; color: #aaa; margin-bottom: 15px;">Wpisz -1, aby użyć domyślnych pinów dla wybranej płytki.</p>
       <div class="cfg-grid">
-          <div class="cfg-group"><label>I2C SDA (np. 17):</label><input type="number" id="cfg_sda"></div>
-          <div class="cfg-group"><label>I2C SCL (np. 18):</label><input type="number" id="cfg_scl"></div>
+          <div class="cfg-group"><label>OLED SDA (Wewnętrzny):</label><input type="number" id="cfg_osda"></div>
+          <div class="cfg-group"><label>OLED SCL (Wewnętrzny):</label><input type="number" id="cfg_oscl"></div>
+          <div class="cfg-group"><label>BARO SDA (Zewnętrzny):</label><input type="number" id="cfg_bsda"></div>
+          <div class="cfg-group"><label>BARO SCL (Zewnętrzny):</label><input type="number" id="cfg_bscl"></div>
           <div class="cfg-group"><label>OLED Reset (RST):</label><input type="number" id="cfg_rst"></div>
           <div class="cfg-group"><label>OLED Zasilanie (Vext):</label><input type="number" id="cfg_pwr"></div>
-          <div class="cfg-group"><label>Czas ekranu (sekundy):</label><input type="number" id="cfg_oled_int" min="1"></div>
+          <div class="cfg-group"><label>Czas ekranu OLED (sekundy):</label><input type="number" id="cfg_oled_int" min="1"></div>
       </div>
       <button onclick="saveFullConfig()" style="margin-top: 15px;">💾 ZAPISZ KONFIGURACJĘ I ZRESTARTUJ</button>
     </div>
@@ -419,8 +465,10 @@ setInterval(function() {
         document.getElementById('cfg_host').value = data.cfg_host;
         document.getElementById('cfg_port').value = data.cfg_port;
         
-        document.getElementById('cfg_sda').value = data.cfg_sda;
-        document.getElementById('cfg_scl').value = data.cfg_scl;
+        document.getElementById('cfg_osda').value = data.cfg_osda;
+        document.getElementById('cfg_oscl').value = data.cfg_oscl;
+        document.getElementById('cfg_bsda').value = data.cfg_bsda;
+        document.getElementById('cfg_bscl').value = data.cfg_bscl;
         document.getElementById('cfg_rst').value = data.cfg_rst;
         document.getElementById('cfg_pwr').value = data.cfg_pwr;
         document.getElementById('cfg_oled_int').value = data.cfg_oled_int;
@@ -461,8 +509,10 @@ function saveFullConfig() {
     params.append('host', document.getElementById('cfg_host').value);
     params.append('port', document.getElementById('cfg_port').value);
     
-    params.append('sda', document.getElementById('cfg_sda').value);
-    params.append('scl', document.getElementById('cfg_scl').value);
+    params.append('osda', document.getElementById('cfg_osda').value);
+    params.append('oscl', document.getElementById('cfg_oscl').value);
+    params.append('bsda', document.getElementById('cfg_bsda').value);
+    params.append('bscl', document.getElementById('cfg_bscl').value);
     params.append('rst', document.getElementById('cfg_rst').value);
     params.append('pwr', document.getElementById('cfg_pwr').value);
     params.append('oled_int', document.getElementById('cfg_oled_int').value);
@@ -514,8 +564,10 @@ String get_sensor_json() {
   json += "\"cfg_host\":\"" + config.server_host + "\",";
   json += "\"cfg_port\":" + String(config.server_port) + ",";
   
-  json += "\"cfg_sda\":" + String(config.i2c_sda) + ",";
-  json += "\"cfg_scl\":" + String(config.i2c_scl) + ",";
+  json += "\"cfg_osda\":" + String(config.oled_sda) + ",";
+  json += "\"cfg_oscl\":" + String(config.oled_scl) + ",";
+  json += "\"cfg_bsda\":" + String(config.bme_sda) + ",";
+  json += "\"cfg_bscl\":" + String(config.bme_scl) + ",";
   json += "\"cfg_rst\":" + String(config.oled_rst) + ",";
   json += "\"cfg_pwr\":" + String(config.oled_pwr) + ",";
   json += "\"cfg_oled_int\":" + String(config.oled_interval) + ",";
@@ -669,11 +721,10 @@ void send_aprs(String custom_comment = "") {
 }
 
 void setup() {
-  delay(3000);
+  delay(1000); 
   Serial.begin(115200);
   Serial.println(F("\n\n--- START RodosWX_3 ---"));
 
-  // System plików (Musi być wczytany przed użyciem zmiennych konfiguracyjnych)
   #if defined(ESP32)
       if(!LittleFS.begin(true)) Serial.println(F("LittleFS Mount Failed"));
   #else
@@ -682,45 +733,48 @@ void setup() {
   
   loadConfig();
 
-  // --- USTALENIE PINÓW (Ręczne lub domyślne fallback) ---
-  int sda = config.i2c_sda;
-  int scl = config.i2c_scl;
-  int rst = config.oled_rst;
-  int pwr = config.oled_pwr;
+  int o_sda = config.oled_sda;
+  int o_scl = config.oled_scl;
+  int o_rst = config.oled_rst;
+  int o_pwr = config.oled_pwr;
+  int b_sda = config.bme_sda;
+  int b_scl = config.bme_scl;
 
-  // Domyślne wartości zapasowe, jeśli użytkownik wpisał -1 (auto)
-  if (pwr == -1) {
+  if (o_pwr == -1) {
       #if defined(ARDUINO_HELTEC_WIFI_LORA_32_V3) || defined(ARDUINO_HELTEC_VISION_MASTER_T190) || defined(ARDUINO_HELTEC_WIRELESS_STICK_V3)
-          pwr = 36; // Vext dla Heltec V3
+          o_pwr = 36;
       #endif
   }
   
-  if (rst == -1) {
+  if (o_rst == -1) {
       #if defined(ARDUINO_HELTEC_WIFI_LORA_32_V2) || defined(ARDUINO_TTGO_LoRa32_V1) || defined(ARDUINO_TTGO_LoRa32_V2)
-          rst = 16;
+          o_rst = 16;
       #elif defined(ARDUINO_HELTEC_WIFI_LORA_32_V3) || defined(ARDUINO_HELTEC_WIRELESS_STICK_V3)
-          rst = 21;
+          o_rst = 21;
       #endif
   }
   
-  if (sda == -1 || scl == -1) {
+  if (o_sda == -1 || o_scl == -1) {
       #if defined(ARDUINO_HELTEC_WIFI_LORA_32_V3) || defined(ARDUINO_HELTEC_VISION_MASTER_T190) || defined(ARDUINO_HELTEC_WIRELESS_STICK_V3)
-          sda = 17; scl = 18;
+          o_sda = 17; o_scl = 18;
       #elif defined(ESP8266)
-          sda = 2; scl = 5;
+          o_sda = 2; o_scl = 5;
       #endif
   }
 
-  // --- ZASILANIE OLEDA ---
-  if (pwr >= 0) {
-      pinMode(pwr, OUTPUT);
-      digitalWrite(pwr, LOW); // LOW załącza zasilanie Vext w Heltec
+  if (b_sda == -1 || b_scl == -1) {
+      b_sda = o_sda;
+      b_scl = o_scl;
+  }
+
+  if (o_pwr >= 0) {
+      pinMode(o_pwr, OUTPUT);
+      digitalWrite(o_pwr, LOW);
       delay(50);
   }
 
-  // --- MAGISTRALA I2C ---
-  if (sda >= 0 && scl >= 0) {
-      Wire.begin(sda, scl);
+  if (o_sda >= 0 && o_scl >= 0) {
+      Wire.begin(o_sda, o_scl);
   } else {
       #if defined(ESP8266)
           Wire.begin(2, 5); 
@@ -730,16 +784,25 @@ void setup() {
   }
   Wire.setClock(100000);
 
-  // --- RESET OLEDA ---
-  if (rst >= 0) {
-      pinMode(rst, OUTPUT);
-      digitalWrite(rst, LOW);
+  TwoWire* baroWire = &Wire;
+  bool use_wire1 = false;
+  #if defined(ESP32)
+  if (b_sda != -1 && b_scl != -1 && (b_sda != o_sda || b_scl != o_scl)) {
+      Wire1.begin(b_sda, b_scl);
+      Wire1.setClock(100000); 
+      baroWire = &Wire1;
+      use_wire1 = true;
+  }
+  #endif
+
+  if (o_rst >= 0) {
+      pinMode(o_rst, OUTPUT);
+      digitalWrite(o_rst, LOW);
       delay(20);
-      digitalWrite(rst, HIGH);
+      digitalWrite(o_rst, HIGH);
       delay(20);
   }
   
-  // --- START EKRANU ---
   if(!display.begin(SSD1306_SWITCHCAPVCC, 0x3C)) {
       Serial.println(F("OLED: NIE WYKRYTO EKRANU SSD1306"));
   } else {
@@ -753,15 +816,56 @@ void setup() {
       display.display();
   }
   
-  // --- START BME280 ---
-  if (bme.begin(0x76)) {
-      Serial.println(F("BME280/BMP280: OK"));
-      bme_available = true;
-  } else {
-      Serial.println(F("BME280/BMP280: NIE WYKRYTO"));
+  Serial.println(F("\n--- Skanowanie fizycznej szyny I2C barometru ---"));
+  byte detected_addr = 0;
+  byte detected_chipid = 0;
+
+  for(int addr = 0x76; addr <= 0x77; addr++) {
+      baroWire->beginTransmission(addr);
+      if (baroWire->endTransmission() == 0) {
+          baroWire->beginTransmission(addr);
+          baroWire->write(0xD0);
+          baroWire->endTransmission();
+          baroWire->requestFrom(addr, 1);
+          if (baroWire->available()) {
+              detected_chipid = baroWire->read();
+              detected_addr = addr;
+              Serial.printf("-> ZNALEZIONO FIZYCZNIE CZUJNIK: Adres 0x%02X, Chip ID: 0x%02X\n", detected_addr, detected_chipid);
+              break;
+          }
+      }
   }
 
+  if (detected_addr != 0) {
+      if (detected_chipid == 0x60) {
+          Serial.println(F("Uruchamianie sterownika BME280..."));
+          if (bme.begin(detected_addr, baroWire)) {
+              baro_sensor_type = 1;
+              Serial.println(F("BME280 ZAINICJALIZOWANY POPRAWNIE"));
+          } else {
+              Serial.println(F("BME280: BLAD STARTU BIBLIOTEKI"));
+          }
+      } 
+      else if (detected_chipid == 0x58 || detected_chipid == 0x56 || detected_chipid == 0x57) {
+          Serial.println(F("Uruchamianie sterownika BMP280..."));
+          bmp = new Adafruit_BMP280((TwoWire*)baroWire);
+          if (bmp->begin(detected_addr, detected_chipid)) {
+              baro_sensor_type = 2;
+              Serial.println(F("BMP280 ZAINICJALIZOWANY POPRAWNIE"));
+          } else {
+              Serial.println(F("BMP280: BLAD STARTU BIBLIOTEKI"));
+          }
+      } 
+      else {
+          Serial.println(F("BME/BMP: Nieobslugiwany lub uszkodzony czujnik (Zle Chip ID)."));
+      }
+  } else {
+      Serial.println(F("UWAGA: Nie wykryto zadnego czujnika I2C na tych pinach!"));
+  }
+  
+  Serial.println(F("\nRozpoczynam inicjalizacje radia (BresserReceiver)..."));
   ws.begin();
+  Serial.println(F("Radio zainicjalizowane pomyslnie."));
 
   Serial.println(F("Laczenie WiFi..."));
   WiFi.mode(WIFI_STA);
@@ -784,7 +888,11 @@ void setup() {
       in_ap_mode = true;
   }
   
-  for(int i=0; i<96; i++) rain_buffer[i].valid = false;
+  for(int i=0; i<RAIN_SAMPLES; i++) {
+      rain_history[i].timestamp = 0;
+      rain_history[i].cum_rain = 0.0;
+  }
+  
   last_frame_time = millis(); 
   last_display_time = millis();
 
@@ -818,8 +926,10 @@ void setup() {
     if(request->hasParam("host")) config.server_host = request->getParam("host")->value();
     if(request->hasParam("port")) config.server_port = request->getParam("port")->value().toInt();
     
-    if(request->hasParam("sda")) config.i2c_sda = request->getParam("sda")->value().toInt();
-    if(request->hasParam("scl")) config.i2c_scl = request->getParam("scl")->value().toInt();
+    if(request->hasParam("osda")) config.oled_sda = request->getParam("osda")->value().toInt();
+    if(request->hasParam("oscl")) config.oled_scl = request->getParam("oscl")->value().toInt();
+    if(request->hasParam("bsda")) config.bme_sda = request->getParam("bsda")->value().toInt();
+    if(request->hasParam("bscl")) config.bme_scl = request->getParam("bscl")->value().toInt();
     if(request->hasParam("rst")) config.oled_rst = request->getParam("rst")->value().toInt();
     if(request->hasParam("pwr")) config.oled_pwr = request->getParam("pwr")->value().toInt();
     if(request->hasParam("oled_int")) config.oled_interval = request->getParam("oled_int")->value().toInt();
@@ -839,7 +949,6 @@ void loop() {
       ESP.restart();
   }
 
-  // --- ZMIANA EKRANU WYZNACZANA PRZEZ INTERWAŁ UŻYTKOWNIKA ---
   unsigned long d_interval = (config.oled_interval > 0 ? config.oled_interval : 4) * 1000UL;
   if (millis() - last_display_time > d_interval) {
       display_page++;
@@ -882,24 +991,36 @@ void loop() {
           }
           current_wx.valid_data = true;
 
-          if (!isnan(current_wx.rain_total_mm)) rain_buffer[rain_idx] = {current_wx.rain_total_mm, true};
-          
-          calc_r1h = 0; calc_p24h = 0; calc_lum = 0;
-          int idx_1h = (rain_idx + 96 - 4) % 96;
-          if (rain_buffer[rain_idx].valid && rain_buffer[idx_1h].valid) {
-              float d1 = rain_buffer[rain_idx].total_mm - rain_buffer[idx_1h].total_mm;
-              calc_r1h = mm_to_hin(d1 < 0 ? 0 : d1);
+          if (!isnan(current_wx.rain_total_mm)) {
+              uint32_t now_sec = time(nullptr);
+              if (now_sec > 100000) { 
+                  if (last_rain_save_time == 0 || abs((long)(now_sec - last_rain_save_time)) >= 600) {
+                      rain_history[rain_hist_idx].timestamp = now_sec;
+                      rain_history[rain_hist_idx].cum_rain = current_wx.rain_total_mm;
+                      rain_hist_idx = (rain_hist_idx + 1) % RAIN_SAMPLES;
+                      last_rain_save_time = now_sec;
+                  }
+                  
+                  float diff_1h = get_rain_delta(now_sec - 3600, current_wx.rain_total_mm);
+                  calc_r1h = mm_to_hin(diff_1h);
+                  
+                  float diff_24h = get_rain_delta(now_sec - 86400, current_wx.rain_total_mm);
+                  calc_p24h = mm_to_hin(diff_24h);
+              }
           }
-          int idx_24h = (rain_idx + 1) % 96;
-          if (rain_buffer[rain_idx].valid && rain_buffer[idx_24h].valid) {
-              float d24 = rain_buffer[rain_idx].total_mm - rain_buffer[idx_24h].total_mm;
-              calc_p24h = mm_to_hin(d24 < 0 ? 0 : d24);
-          }
-          rain_idx = (rain_idx + 1) % 96;
 
-          if (bme_available) {
-              float p = bme.readPressure();
-              if (!isnan(p) && p > 80000.0) baro_hpa = (int)(p / 10.0);
+          // --- BEZPIECZNY ODCZYT CISNIENIA ---
+          if (baro_sensor_type > 0) {
+              float p = NAN;
+              if (baro_sensor_type == 1) {
+                  p = bme.readPressure();
+              } else if (baro_sensor_type == 2 && bmp != nullptr) {
+                  p = bmp->readPressure();
+              }
+              
+              if (!isnan(p) && p > 80000.0 && p < 120000.0) {
+                  baro_hpa = (int)(p / 10.0);
+              }
           }
           
           if (!isnan(current_wx.light_klx)) {
