@@ -1,0 +1,48 @@
+name: Build binaries and release
+on:
+  push:
+    tags:
+      - 'v*' # Push events to matching v*, i.e. v1.0, v20.15.10
+  workflow_dispatch:
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cache/pip
+            ~/.platformio/.cache
+          key: ${{ runner.os }}-pio
+      - uses: actions/setup-python@v7
+        with:
+          python-version: '3.14'
+      - name: Install PlatformIO Core
+        run: pip install --upgrade platformio
+
+      - name: Run PlatformIO
+        run: pio run
+
+      - name: Create Release
+        id: create_release
+        uses: actions/create-release@v1
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          tag_name: ${{ github.ref }}-${{ steps.date.outputs.date }}
+          release_name: Release ${{ github.ref }} ${{ steps.date.outputs.date }}
+          draft: false
+          prerelease: true
+
+      - name: Upload Heltec-WiFi-LoRa32-v3.bin
+        id: upload-release-asset-Heltec-WiFi-LoRa32-v3_bin
+        uses: actions/upload-release-asset@v1
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          upload_url: ${{ steps.create_release.outputs.upload_url }}
+          asset_path: .pio/build/heltec_wifi_lora_32_V3/firmware.bin
+          asset_name: Heltec-WiFi-LoRa32-v3-${{ steps.date.outputs.date }}.bin
+          asset_content_type: application/octet-stream
+
