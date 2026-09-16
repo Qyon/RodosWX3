@@ -1031,17 +1031,21 @@ void loop() {
 
   // --- WYSYŁKA APRS ---
   unsigned long interval_ms = config.report_interval_min * 60000UL;
-  if (!in_ap_mode && (millis() - last_report_time >= interval_ms)) {
-      if (current_wx.valid_data && WiFi.status() == WL_CONNECTED) {
+  bool aprs_allowed = (!in_ap_mode || config.use_kiss);
+  // aprs frame is send if enough time passed, and we use KISS OR we are connected to external wifi
+  if (aprs_allowed && (millis() - last_report_time >= interval_ms)) {
+      if (current_wx.valid_data && (WiFi.status() == WL_CONNECTED || config.use_kiss)) {
           send_aprs();
       }
       last_report_time = millis();
   }
 
   // --- WATCHDOG ---
-  if (!in_ap_mode && config.sensor_id != 0 && (millis() - last_frame_time >= NO_DATA_TIMEOUT_MS)) {
+  if (aprs_allowed && config.sensor_id != 0 && (millis() - last_frame_time >= NO_DATA_TIMEOUT_MS)) {
       Serial.println(F("\n[WATCHDOG] Brak ramek radiowych od 5 minut! Wysylam komunikat i wymuszam restart..."));
-      if (WiFi.status() == WL_CONNECTED) send_aprs("RodosWX3: Brak sygnalu ze stacji");
+      if (WiFi.status() == WL_CONNECTED || config.use_kiss) {
+          send_aprs("RodosWX3: Brak sygnalu ze stacji");
+      }
       delay(1000); 
       ESP.restart();
   }
