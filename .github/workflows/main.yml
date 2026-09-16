@@ -26,14 +26,13 @@ jobs:
 
       - name: Create Release
         id: create_release
-        uses: actions/create-release@v1
+        uses: elgohr/Github-Release-Action@v5
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:
-          tag_name: ${{ github.ref }}-${{ steps.date.outputs.date }}
-          release_name: Release ${{ github.ref }} ${{ steps.date.outputs.date }}
-          draft: false
+          tag: ${{ github.ref }}-${{ steps.date.outputs.date }}
           prerelease: true
+          title: Release ${{ github.ref }} ${{ steps.date.outputs.date }}
 
       - name: Upload Heltec-WiFi-LoRa32-v3.bin
         id: upload-release-asset-Heltec-WiFi-LoRa32-v3_bin
