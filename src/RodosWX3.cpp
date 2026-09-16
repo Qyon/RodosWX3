@@ -162,7 +162,7 @@ struct WeatherData {
   float rain_total_mm = NAN;
   float uv_index = NAN;
   float light_klx = NAN;
-  int radio_rssi = -100;  
+  int radio_rssi = -255;
   bool battery_ok = true; 
   bool valid_data = false;
 } current_wx;
