@@ -22,20 +22,18 @@ jobs:
         run: pip install --upgrade platformio
       - name: Run PlatformIO
         run: pio run
-      - name: Get current date time
-        run: echo "CURRENT_TIME=$(date +'%Y-%m-%dT%H%M%S')" >> $GITHUB_STATE
       - name: Prepare relase files
         run: |
           mkdir outfiles
-          cp .pio/build/heltec_wifi_lora_32_V3/firmware.bin outfiles/Heltec-WiFi-LoRa32-v3-${CURRENT_TIME}.bin
+          cp .pio/build/heltec_wifi_lora_32_V3/firmware.bin outfiles/Heltec-WiFi-LoRa32-v3.bin
 
       - name: Create Release
         uses: softprops/action-gh-release@v3
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:
-          tag_name: ${{ github.ref }}-${CURRENT_TIME}
+          tag_name: ${{ github.ref }}
           prerelease: true
-          name: Release ${{ github.ref }} ${CURRENT_TIME}
+          name: Release ${{ github.ref }}
           files: outfiles/*.bin
 
