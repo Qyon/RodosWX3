@@ -421,8 +421,9 @@ const char index_html[] PROGMEM = R"rawliteral(
     <strong>Status Systemu:</strong><br><br>
     Sygnał radiowy (RSSI): <span id="rssi" style="color:#4CAF50">--</span> dBm<br>
     Bateria czujnika: <span id="bat">--</span><br>
-    Czas od ostatniej ramki: <span id="last_seen">--</span> sek.<br>
-    Następny raport APRS za: <span id="aprs_time">--</span> sek.<br>
+    Czas od ostatniej ramki: <span id="last_seen">--</span> s<br>
+    Następny raport APRS za: <span id="aprs_time">--</span> s<br>
+    Uptime: <span id="uptime">0</span> s<br>
     Tryb WiFi: <span id="wifi_mode">--</span>
   </div>
 
@@ -444,6 +445,9 @@ setInterval(function() {
     document.getElementById('bat').innerHTML = data.bat ? "OK 🔋" : "<span class='alert'>SŁABA 🪫</span>";
     document.getElementById('wifi_mode').innerHTML = data.is_ap ? "<span class='alert'>Access Point</span>" : "Station";
     
+    let uptime = Math.floor(data.uptime / 1000);
+    let uptimeElem = document.getElementById('uptime');
+    uptimeElem.innerHTML = uptime;
     let seen = Math.floor(data.last_seen / 1000);
     let seenElem = document.getElementById('last_seen');
     seenElem.innerHTML = seen;
@@ -547,6 +551,7 @@ String get_sensor_json() {
   long time_to_aprs = interval_ms - (now - last_report_time);
   if (time_to_aprs < 0) time_to_aprs = 0;
 
+  json += "\"uptime\":" + String(now) + ",";
   json += "\"last_seen\":" + String(now - last_frame_time) + ",";
   json += "\"aprs_time\":" + String(time_to_aprs) + ",";
   json += "\"is_ap\":" + String(in_ap_mode ? "true" : "false") + ",";
